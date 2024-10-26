@@ -47,13 +47,23 @@ int32_t decode(char *s, char **ret, int32_t *type) {
     if (*p == '-')
       ++p;
     // ensure all the characters between "i" and "e" are digits
-    for (; p != t; ++p, ++intlen) {
-      if (!is_digit(*p)) {
+    for (char *q = p; q != t; ++q, ++intlen) {
+      if (!is_digit(*q)) {
         fprintf(stderr, "Invalid integer\n");
         return 1;
       }
     }
     if (intlen == 0) {
+      fprintf(stderr, "Invalid integer\n");
+      return 1;
+    }
+    // -0 is invalid
+    if (intlen == 1 && *p == '0' && *(s + 1) == '-') {
+      fprintf(stderr, "Invalid integer\n");
+      return 1;
+    }
+    // integer cannot begin with '0'
+    if (intlen > 1 && *p == '0') {
       fprintf(stderr, "Invalid integer\n");
       return 1;
     }
