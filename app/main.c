@@ -26,17 +26,57 @@ char *decode_bencode(const char *bencoded_value) {
   }
 }
 
-int32_t decode(char *s, char **ret) {
+int32_t decode(char *s, char **ret, int32_t *type) {
+  int32_t len = strlen(s);
+  if (len == 0) {
+    fprintf(stderr, "Invalid bencoded string\n");
+    return 1;
+  }
+
+  if (*s == 'i') {
+    // possibility of bencoded string being an integer
+    char *t = strchr(s + 1, 'e');
+    if (t == NULL) {
+      fprintf(stderr, "Invalid bencoded string\n");
+      return 1;
+    }
+
+    // check whether the first character is "-" sign
+    char *p = s + 1;
+    int32_t intlen = 0;
+    if (*p == '-')
+      ++p;
+    // ensure all the characters between "i" and "e" are digits
+    for (; p != t; ++p, ++intlen) {
+      if (!is_digit(*p)) {
+        fprintf(stderr, "Invalid integer\n");
+        return 1;
+      }
+    }
+    if (intlen == 0) {
+      fprintf(stderr, "Invalid integer\n");
+      return 1;
+    }
+
+    *t = '\0';
+    *ret = s + 1;
+    *type = 1;
+
+    return 0;
+  }
+
   char *t = strchr(s, ':');
   if (t == NULL) {
     fprintf(stderr, "Invalid bencode string\n");
     return 1;
   }
+
   // ensure there is something before ":"
   if (s == t) {
     fprintf(stderr, "Invalid length\n");
     return 1;
   }
+
   // ensure all characters before ":" are digits
   for (char *p = s; p != t; ++p) {
     if (!is_digit(*p)) {
@@ -44,14 +84,18 @@ int32_t decode(char *s, char **ret) {
       return 1;
     }
   }
-  int32_t len = atoi(s);
+
+  int32_t p_len = atoi(s);
   int32_t str_len = strlen(t + 1);
-  if (len > str_len) {
+  if (p_len > str_len) {
     fprintf(stderr, "Provided length is bigger than the string length\n");
     return 1;
   }
-  *(t + 1 + len) = '\0';
+
+  *(t + 1 + p_len) = '\0';
   *ret = t + 1;
+  *type = 0;
+
   return 0;
 }
 
@@ -63,11 +107,16 @@ int32_t main(int32_t argc, char **argv) {
 
   if (strcmp(argv[1], "decode") == 0) {
     char *d_str = NULL;
-    if (decode(argv[2], &d_str) != 0) {
+    int32_t type;
+    if (decode(argv[2], &d_str, &type) != 0) {
       fprintf(stderr, "Failed to decode bencoded string\n");
       return 1;
     }
-    printf("\"%s\"\n", d_str);
+    if (type == 0) {
+      printf("\"%s\"\n", d_str);
+    } else if (type == 1) {
+      printf("%s\n", d_str);
+    }
     return 0;
   } else {
     fprintf(stderr, "Not implemented\n");
