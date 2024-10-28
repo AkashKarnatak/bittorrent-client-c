@@ -51,6 +51,59 @@ void list_free(struct list *l) {
   free(l->ptr);
 }
 
+struct item {
+  char *key;
+  char *value;
+};
+
+struct dict {
+  struct item *ptr;
+  int32_t len;
+  int32_t cap;
+};
+
+int32_t dict_init(struct dict *d) {
+  int32_t new_cap = 4;
+  struct item *new_ptr = (struct item *)malloc(new_cap * sizeof(struct item));
+  if (new_ptr == NULL) {
+    fprintf(stderr, "Failed to create new dict\n");
+    return 1;
+  }
+
+  d->ptr = new_ptr;
+  d->cap = new_cap;
+  d->len = 0;
+
+  return 0;
+}
+
+int32_t dict_push(struct dict *d, char *k, char *v) {
+  if (d->len == d->cap) {
+    int32_t new_cap = 2 * d->cap;
+    struct item *new_ptr =
+        (struct item *)realloc(d->ptr, new_cap * sizeof(struct item));
+    if (new_ptr == NULL) {
+      fprintf(stderr, "Failed to reallocate memory\n");
+      return 1;
+    }
+    d->ptr = new_ptr;
+    d->cap = new_cap;
+  }
+  d->ptr[d->len].key = k;
+  d->ptr[d->len].value = v;
+  ++d->len;
+
+  return 0;
+}
+
+void dict_free(struct dict *d) {
+  for (int32_t i = 0; i < d->len; ++i) {
+    free(d->ptr[i].key);
+    free(d->ptr[i].value);
+  }
+  free(d->ptr);
+}
+
 char *decode_bencode(const char *bencoded_value) {
   if (is_digit(bencoded_value[0])) {
     int length = atoi(bencoded_value);
@@ -70,6 +123,11 @@ char *decode_bencode(const char *bencoded_value) {
     exit(1);
   }
 }
+
+int32_t decode_str(char **s, char **str);
+int32_t decode_int(char **s, char **str);
+int32_t decode_list(char **s, char **str);
+int32_t decode_dict(char **s, char **str);
 
 int32_t decode_str(char **s, char **str) {
   char *ptr = *s;
@@ -194,8 +252,14 @@ int32_t decode_list(char **s, char **str) {
         list_free(&l);
         return 1;
       }
+    } else if (*ptr == 'd') {
+      if (decode_dict(&ptr, &str) != 0) {
+        fprintf(stderr, "Failed to decode bencoded dict\n");
+        list_free(&l);
+        return 1;
+      }
     } else {
-      fprintf(stderr, "Not implemented\n");
+      fprintf(stderr, "Invalid character encountered\n");
       list_free(&l);
       return 1;
     }
@@ -244,8 +308,127 @@ int32_t decode_list(char **s, char **str) {
   return 0;
 }
 
-int32_t decode_dict(char *s, char **str, char **end_ptr) {
-  // TODO: implement
+int32_t decode_dict(char **s, char **str) {
+  char *ptr = *s;
+  if (*ptr++ != 'd') {
+    fprintf(stderr, "Dictionary should begin with \"d\" delimiter\n");
+    return 1;
+  }
+
+  struct dict d;
+  if (dict_init(&d) != 0) {
+    fprintf(stderr, "Failed to initialize dictionary\n");
+    return 1;
+  }
+
+  while (*ptr != 'e' && *ptr != '\0') {
+    char *key_str = NULL;
+    char *val_str = NULL;
+
+    // parse key
+    if (!is_digit(*ptr)) {
+      fprintf(stderr, "Dictionary's key must be a valid string\n");
+      dict_free(&d);
+      return 1;
+    }
+    if (decode_str(&ptr, &key_str) != 0) {
+      fprintf(stderr, "Failed to decode dictionary's key\n");
+      dict_free(&d);
+      return 1;
+    }
+
+    // parse value
+    if (*ptr == 'i') {
+      if (decode_int(&ptr, &val_str) != 0) {
+        fprintf(stderr, "Failed to decode bencoded integer\n");
+        dict_free(&d);
+        free(key_str);
+        return 1;
+      }
+    } else if (is_digit(*ptr)) {
+      if (decode_str(&ptr, &val_str) != 0) {
+        fprintf(stderr, "Failed to decode bencoded string\n");
+        dict_free(&d);
+        free(key_str);
+        return 1;
+      }
+    } else if (*ptr == 'l') {
+      if (decode_list(&ptr, &val_str) != 0) {
+        fprintf(stderr, "Failed to decode bencoded list\n");
+        dict_free(&d);
+        free(key_str);
+        return 1;
+      }
+    } else if (*ptr == 'd') {
+      if (decode_dict(&ptr, &val_str) != 0) {
+        fprintf(stderr, "Failed to decode bencoded dict\n");
+        dict_free(&d);
+        free(key_str);
+        return 1;
+      }
+    } else {
+      fprintf(stderr, "Invalid character encountered\n");
+      dict_free(&d);
+      free(key_str);
+      return 1;
+    }
+
+    if (dict_push(&d, key_str, val_str) != 0) {
+      dict_free(&d);
+      free(key_str);
+      free(val_str);
+      return 1;
+    }
+  }
+
+  for (int32_t i = 0; i < d.len - 1; ++i) {
+    if (strcmp(d.ptr[i].key, d.ptr[i + 1].key) > 0) {
+      fprintf(stderr, "Dictionary keys must be sorted lexicographically\n");
+      dict_free(&d);
+      return 1;
+    }
+  }
+
+  int32_t str_len = 3;                  // two {} brackets and \0
+  str_len += d.len > 0 ? d.len - 1 : 0; // d.len - 1 commas
+  for (int32_t i = 0; i < d.len; ++i) {
+    str_len += strlen(d.ptr[i].key);
+    str_len += strlen(d.ptr[i].value);
+    ++str_len; // for ":"
+  }
+
+  char *st = (char *)malloc(str_len * sizeof(char));
+  if (st == NULL) {
+    fprintf(stderr, "Failed to allocate memory\n");
+    dict_free(&d);
+    return 1;
+  }
+  char *t = st;
+
+  *t++ = '{';
+  for (int32_t i = 0; i < d.len; ++i) {
+    int32_t key_len = strlen(d.ptr[i].key);
+    int32_t val_len = strlen(d.ptr[i].value);
+    memcpy(t, d.ptr[i].key, key_len);
+    t += key_len;
+    *t++ = ':';
+    memcpy(t, d.ptr[i].value, val_len);
+    t += val_len;
+    *t++ = ',';
+  }
+  if (d.len > 0)
+    --t;
+  *t++ = '}';
+  *t = '\0';
+
+  if (*ptr == 'e')
+    ++ptr;
+  *s = ptr;
+  *str = st;
+
+  // free all resources
+  dict_free(&d);
+
   return 0;
 }
 
@@ -267,8 +450,13 @@ int32_t decode(char *s) {
       fprintf(stderr, "Invalid bencoded list\n");
       return 1;
     }
+  } else if (*s == 'd') {
+    if (decode_dict(&s, &str) != 0) {
+      fprintf(stderr, "Invalid bencoded dict\n");
+      return 1;
+    }
   } else {
-    fprintf(stderr, "Not implemented\n");
+    fprintf(stderr, "Invalid character encountered\n");
     return 1;
   }
 
