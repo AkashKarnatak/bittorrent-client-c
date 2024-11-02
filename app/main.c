@@ -230,7 +230,7 @@ int32_t next_value(char **ptr, bevalue_t *beval) {
     }
 
     ++*ptr;
-    while (**ptr != 'e') {
+    while (**ptr != 'e' && **ptr != '\0') {
       bevalue_t val;
       if (next_value(ptr, &val) != 0) {
         fprintf(stderr, "Failed to parse next value\n");
@@ -240,6 +240,10 @@ int32_t next_value(char **ptr, bevalue_t *beval) {
         fprintf(stderr, "Failed to insert element into vector\n");
         return 1;
       }
+    }
+    if (*(*ptr)++ == '\0') {
+      fprintf(stderr, "Invalid list - cannot find end delimiter\n");
+      return 1;
     }
 
     v.type = BE_VEC;
@@ -255,7 +259,7 @@ int32_t next_value(char **ptr, bevalue_t *beval) {
     }
 
     ++*ptr;
-    while (**ptr != 'e') {
+    while (**ptr != 'e' && **ptr != '\0') {
       bestring_t key;
       if (next_str(ptr, &key) != 0) {
         fprintf(stderr, "Failed to parse dict key\n");
@@ -275,6 +279,10 @@ int32_t next_value(char **ptr, bevalue_t *beval) {
         fprintf(stderr, "Failed to insert element into vector\n");
         return 1;
       }
+    }
+    if (*(*ptr)++ == '\0') {
+      fprintf(stderr, "Invalid list - cannot find end delimiter\n");
+      return 1;
     }
 
     v.type = BE_VEC;
@@ -338,6 +346,7 @@ int32_t decode(char *s) {
   }
   char buf[1024];
   char *str = buf;
+  printf("%d\n", v.val.vec.len);
   be_print(&v, &str);
   printf("%s\n", buf);
   bevalue_free(&v);
