@@ -356,7 +356,7 @@ int32_t decode(char *s) {
 int32_t parse(char *filename) {
   FILE *f = fopen(filename, "r");
   if (f == NULL) {
-    perror("Failed to open torrent file\n");
+    perror("Failed to open torrent file");
     return 1;
   }
 
