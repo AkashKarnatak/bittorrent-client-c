@@ -385,8 +385,7 @@ int32_t parse(char *filename) {
     return 1;
   }
 
-  printf("Tracker URL: %.*s\n", announce_v->val.str.n,
-         announce_v->val.str.str);
+  printf("Tracker URL: %.*s\n", announce_v->val.str.n, announce_v->val.str.str);
   printf("Length: %d\n", length_v->val.i);
 
   bevalue_free(&v);
