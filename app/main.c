@@ -357,7 +357,7 @@ int32_t parse(char *filename) {
   FILE *f = fopen(filename, "r");
   if (f == NULL) {
     perror("Failed to open torrent file");
-    return 0;
+    return 1;
   }
 
   char buf[1024];
@@ -413,7 +413,7 @@ int32_t main(int32_t argc, char **argv) {
     }
   } else if (strcmp(argv[1], "info") == 0) {
     if (parse(argv[2]) != 0) {
-      return 0;
+      return 1;
     }
   } else {
     fprintf(stderr, "Not implemented\n");
