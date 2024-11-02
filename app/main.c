@@ -29,7 +29,7 @@ typedef struct {
 struct bevalue_t {
   betype_t type;
   union {
-    int32_t i;
+    int64_t i;
     bestring_t str;
     bevec_t vec;
   } val;
@@ -166,8 +166,7 @@ int32_t next_str(char **ptr, bestring_t *bestr) {
   return 0;
 }
 
-// TODO: support long
-int32_t next_int(char **ptr, int32_t *val) {
+int32_t next_int(char **ptr, int64_t *val) {
   if (*(*ptr)++ != 'i') {
     fprintf(stderr, "Invalid integer encoding\n");
     return 1;
@@ -191,7 +190,13 @@ int32_t next_int(char **ptr, int32_t *val) {
     fprintf(stderr, "Invalid integer\n");
     return 1;
   }
-  *val = atoi(begin);
+  char *end;
+  int64_t i = strtoll(begin, &end, 10);
+  if (begin == end) {
+    fprintf(stderr, "No digits found\n");
+    return 1;
+  }
+  *val = i;
   ++*ptr;
   return 0;
 }
@@ -210,7 +215,7 @@ int32_t next_value(char **ptr, bevalue_t *beval) {
     *beval = v;
 
   } else if (**ptr == 'i') {
-    int32_t i;
+    int64_t i;
     bevalue_t v;
 
     if (next_int(ptr, &i) != 0) {
@@ -299,7 +304,7 @@ int32_t next_value(char **ptr, bevalue_t *beval) {
 void be_print(bevalue_t *v, char **str) {
   switch (v->type) {
   case BE_INT:
-    *str += sprintf(*str, "%d", v->val.i);
+    *str += sprintf(*str, "%ld", v->val.i);
     break;
   case BE_STR:
     *str += sprintf(*str, "\"%.*s\"", v->val.str.n, v->val.str.str);
@@ -394,7 +399,7 @@ int32_t parse(char *filename) {
   }
 
   printf("Tracker URL: %.*s\n", announce_v->val.str.n, announce_v->val.str.str);
-  printf("Length: %d\n", length_v->val.i);
+  printf("Length: %ld\n", length_v->val.i);
 
   bevalue_free(&v);
   return 0;
