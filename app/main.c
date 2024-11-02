@@ -346,7 +346,6 @@ int32_t decode(char *s) {
   }
   char buf[1024];
   char *str = buf;
-  printf("%d\n", v.val.vec.len);
   be_print(&v, &str);
   printf("%s\n", buf);
   bevalue_free(&v);
