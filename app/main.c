@@ -517,7 +517,7 @@ int32_t main(int32_t argc, char **argv) {
     if (parse(argv[2]) != 0) {
       char buf[1024];
       char *s = buf;
-      sprintf(s, "wc -c %s", argv[2]);
+      sprintf(s, "xxd -p %s", argv[2]);
       system(buf);
       print_file(argv[2]);
       return 1;
