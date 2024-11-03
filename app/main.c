@@ -377,6 +377,13 @@ void be_print(bevalue_t *v, char **str) {
   **str = '\0';
 }
 
+void print_hex(unsigned char *s) {
+  for (int32_t i = 0; i < SHA_DIGEST_LENGTH; ++i) {
+    printf("%02x", s[i]);
+  }
+  printf("\n");
+}
+
 int32_t decode(char *s) {
   bevalue_t v;
   if (next_value(&s, &v) != 0) {
@@ -440,6 +447,18 @@ int32_t parse(char *filename) {
     return 1;
   }
 
+  bevalue_t *piece_length_v = bevec_dict_get(&info_v->val.vec, "piece length");
+  if (piece_length_v == NULL || piece_length_v->type != BE_INT) {
+    fprintf(stderr, "Invalid piece length key\n");
+    return 1;
+  }
+
+  bevalue_t *pieces_v = bevec_dict_get(&info_v->val.vec, "pieces");
+  if (pieces_v == NULL || pieces_v->type != BE_STR) {
+    fprintf(stderr, "Invalid pieces key\n");
+    return 1;
+  }
+
   s = buf;
   char *raw_info_v = dict_get_raw(&s, "info");
   if (raw_info_v == NULL) {
@@ -459,10 +478,14 @@ int32_t parse(char *filename) {
   printf("Tracker URL: %.*s\n", announce_v->val.str.n, announce_v->val.str.str);
   printf("Length: %ld\n", length_v->val.i);
   printf("Info Hash: ");
-  for (int32_t i = 0; i < SHA_DIGEST_LENGTH; ++i) {
-    printf("%02x", sha[i]);
+  print_hex(sha);
+  printf("Piece Length: %ld\n", piece_length_v->val.i);
+  printf("Piece Hashes:\n");
+  unsigned char *ptr = (unsigned char *)pieces_v->val.str.str;
+  for (int32_t i = 0; i < pieces_v->val.str.n; i += SHA_DIGEST_LENGTH) {
+    print_hex(ptr);
+    ptr += SHA_DIGEST_LENGTH;
   }
-  printf("\n");
 
   bevalue_free(&v);
   return 0;
