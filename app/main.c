@@ -1,3 +1,4 @@
+#include <openssl/sha.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -125,6 +126,7 @@ void bevec_free(bevec_t *v) {
   }
 }
 
+// TODO: disambiguate error and key not found
 bevalue_t *bevec_dict_get(bevec_t *v, char *str) {
   if (!v->is_dict) {
     fprintf(stderr, "Not a dictionary\n");
@@ -141,7 +143,7 @@ bevalue_t *bevec_dict_get(bevec_t *v, char *str) {
   return val;
 }
 
-int32_t next_value(char **s, bevalue_t *beval);
+int32_t next_value(char **ptr, bevalue_t *beval);
 
 int32_t next_str(char **ptr, bestring_t *bestr) {
   char *begin = *ptr;
@@ -160,8 +162,10 @@ int32_t next_str(char **ptr, bestring_t *bestr) {
     fprintf(stderr, "String is shorter than the provided length\n");
     return 1;
   }
-  bestr->str = *ptr;
-  bestr->n = n;
+  if (bestr != NULL) {
+    bestr->str = *ptr;
+    bestr->n = n;
+  }
   *ptr += n;
   return 0;
 }
@@ -196,9 +200,41 @@ int32_t next_int(char **ptr, int64_t *val) {
     fprintf(stderr, "No digits found\n");
     return 1;
   }
-  *val = i;
+  if (val != NULL) {
+    *val = i;
+  }
   ++*ptr;
   return 0;
+}
+
+// TODO: disambiguate error and key not found
+char *dict_get_raw(char **ptr, char *str) {
+  if (*(*ptr)++ != 'd') {
+    fprintf(stderr, "Not a dictionary\n");
+    return NULL;
+  }
+
+  while (**ptr != 'e' && **ptr != '\0') {
+    bestring_t key;
+
+    if (next_str(ptr, &key) != 0) {
+      fprintf(stderr, "Failed to parse dict key\n");
+      return NULL;
+    }
+
+    if (strncmp(key.str, str, key.n) == 0) {
+      return *ptr;
+    }
+
+    bevalue_t v;
+    if (next_value(ptr, &v) != 0) {
+      fprintf(stderr, "Failed to parse dict value\n");
+      return NULL;
+    }
+    bevalue_free(&v);
+  }
+
+  return NULL;
 }
 
 int32_t next_value(char **ptr, bevalue_t *beval) {
@@ -398,8 +434,29 @@ int32_t parse(char *filename) {
     return 1;
   }
 
+  s = buf;
+  char *raw_info_v = dict_get_raw(&s, "info");
+  if (raw_info_v == NULL) {
+    fprintf(stderr, "Unable to find info key\n");
+    return 1;
+  }
+  bevalue_t v2;
+  if (next_value(&s, &v2) != 0) {
+    fprintf(stderr, "Failed to parse dict value\n");
+    return 1;
+  }
+  bevalue_free(&v2);
+  int32_t n = s - raw_info_v;
+  unsigned char sha[SHA_DIGEST_LENGTH];
+  SHA1((unsigned char *)raw_info_v, n, (unsigned char *)sha);
+
   printf("Tracker URL: %.*s\n", announce_v->val.str.n, announce_v->val.str.str);
   printf("Length: %ld\n", length_v->val.i);
+  printf("Info Hash: ");
+  for (int32_t i = 0; i < SHA_DIGEST_LENGTH; ++i) {
+    printf("%02x", sha[i]);
+  }
+  printf("\n");
 
   bevalue_free(&v);
   return 0;
