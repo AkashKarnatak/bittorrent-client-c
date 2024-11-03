@@ -406,6 +406,9 @@ int32_t parse(char *filename) {
     return 1;
   }
 
+  printf("%s\n", buf);
+  fclose(f);
+
   char *s = buf;
   bevalue_t v;
   if (next_value(&s, &v) != 0) {
