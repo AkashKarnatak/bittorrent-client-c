@@ -408,7 +408,7 @@ int32_t parse(char *filename) {
 
   printf("%s\n", buf);
   fclose(f);
-  f = fopen("/home/akash/new.torrent", "w");
+  f = fopen("/home/akash/new.torrent", "w+");
   fputs(buf, f);
   fclose(f);
 
