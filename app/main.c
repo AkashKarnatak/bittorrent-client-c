@@ -408,13 +408,13 @@ int32_t parse(char *filename) {
 
   printf("%s\n", buf);
   fclose(f);
-  f = fopen("/home/akash/new.torrent", "w+");
-  if (f == NULL) {
+  FILE *ff = fopen("/home/akash/new.torrent", "w+");
+  if (ff == NULL) {
     fprintf(stderr, "unable to create file\n");
     return 1;
   }
-  fputs(buf, f);
-  fclose(f);
+  fputs(buf, ff);
+  fclose(ff);
 
   char *s = buf;
   bevalue_t v;
