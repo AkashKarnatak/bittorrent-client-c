@@ -406,15 +406,13 @@ int32_t parse(char *filename) {
     return 1;
   }
 
-  printf("%s\n", buf);
-  fclose(f);
-  FILE *ff = fopen("/home/akash/new.torrent", "w+");
-  if (ff == NULL) {
-    fprintf(stderr, "unable to create file\n");
-    return 1;
+  int32_t len = strlen(buf);
+  for (int32_t i = 0; i < len; ++i) {
+    printf("%02x", buf[i]);
   }
-  fputs(buf, ff);
-  fclose(ff);
+  printf("\n");
+  system("whoami");
+  system("ls ~");
 
   char *s = buf;
   bevalue_t v;
