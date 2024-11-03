@@ -515,6 +515,10 @@ int32_t main(int32_t argc, char **argv) {
     }
   } else if (strcmp(argv[1], "info") == 0) {
     if (parse(argv[2]) != 0) {
+      char buf[1024];
+      char *s = buf;
+      sprintf(s, "cat %s", argv[2]);
+      system(buf);
       print_file(argv[2]);
       return 1;
     }
