@@ -416,7 +416,7 @@ int32_t print_file(char *filename) {
   fclose(f);
 
   for (char *s = buf; *s != '\0'; ++s) {
-    printf("\\x%02x", *s);
+    printf("%02x", *s);
   }
   printf("\n");
   return 0;
