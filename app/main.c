@@ -394,25 +394,26 @@ int32_t decode(char *s) {
 }
 
 int32_t parse(char *filename) {
+  // open file
   FILE *f = fopen(filename, "r");
   if (f == NULL) {
     perror("Failed to open torrent file");
     return 1;
   }
 
-  char buf[1024];
-  if (fgets(buf, 1024, f) == NULL) {
-    fprintf(stderr, "Failed to read file content\n");
+  // read contents
+  fseek(f, 0, SEEK_END);
+  int64_t fsize = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  char buf[fsize + 1];
+  if (fread(buf, 1, fsize, f) != fsize) {
+    fprintf(stderr, "Error while reading file contents\n");
     return 1;
   }
+  buf[fsize] = '\0';
 
-  int32_t len = strlen(buf);
-  for (int32_t i = 0; i < len; ++i) {
-    printf("%02x", buf[i]);
-  }
-  printf("\n");
-  system("whoami");
-  system("ls ~");
+  // close file
+  fclose(f);
 
   char *s = buf;
   bevalue_t v;
