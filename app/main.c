@@ -411,6 +411,9 @@ int32_t print_file(char *filename) {
     return 1;
   }
   buf[fsize] = '\0';
+  printf("last: %d\n", fgetc(f));
+  printf("%d\n", feof(f));
+  printf("%d\n", ferror(f));
 
   // close file
   fclose(f);
