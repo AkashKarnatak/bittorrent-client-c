@@ -158,10 +158,7 @@ int32_t next_str(char **ptr, bestring_t *bestr) {
     return 1;
   }
   int32_t n = atoi(begin);
-  if (strlen(++*ptr) < n) {
-    fprintf(stderr, "String is shorter than the provided length\n");
-    return 1;
-  }
+  ++*ptr;
   if (bestr != NULL) {
     bestr->str = *ptr;
     bestr->n = n;
@@ -393,38 +390,6 @@ int32_t decode(char *s) {
   return 0;
 }
 
-int32_t print_file(char *filename) {
-  // open file
-  FILE *f = fopen(filename, "r");
-  if (f == NULL) {
-    perror("Failed to open torrent file");
-    return 1;
-  }
-
-  // read contents
-  fseek(f, 0, SEEK_END);
-  int64_t fsize = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  char buf[fsize + 1];
-  if (fread(buf, 1, fsize, f) != fsize) {
-    fprintf(stderr, "Error while reading file contents\n");
-    return 1;
-  }
-  buf[fsize] = '\0';
-  printf("last: %d\n", fgetc(f));
-  printf("%d\n", feof(f));
-  printf("%d\n", ferror(f));
-
-  // close file
-  fclose(f);
-
-  for (char *s = buf; *s != '\0'; ++s) {
-    printf("%02x", *s);
-  }
-  printf("\n");
-  return 0;
-}
-
 int32_t parse(char *filename) {
   // open file
   FILE *f = fopen(filename, "r");
@@ -515,11 +480,6 @@ int32_t main(int32_t argc, char **argv) {
     }
   } else if (strcmp(argv[1], "info") == 0) {
     if (parse(argv[2]) != 0) {
-      char buf[1024];
-      char *s = buf;
-      sprintf(s, "xxd -p %s", argv[2]);
-      system(buf);
-      print_file(argv[2]);
       return 1;
     }
   } else {
