@@ -741,6 +741,8 @@ int32_t handshake(char *filename, char *peer_info) {
     return 1;
   }
   n = recv_buf[0];
+  memcpy(hash, recv_buf + n + 9, 20);
+  memcpy(id, recv_buf + n + 29, 20);
   printf("Peer ID: ");
   print_hex(id);
 
