@@ -1,5 +1,8 @@
+#include <arpa/inet.h>
+#include <bits/sockaddr.h>
 #include <curl/curl.h>
 #include <curl/easy.h>
+#include <netinet/in.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <stdbool.h>
@@ -7,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 
 bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
@@ -387,7 +391,7 @@ void print_hex(unsigned char *s) {
   printf("\n");
 }
 
-void print_id(unsigned char *s) {
+void print_ip(unsigned char *s) {
   printf("%d.%d.%d.%d:%d\n", s[0], s[1], s[2], s[3], (s[4] << 8) | s[5]);
 }
 
@@ -655,7 +659,7 @@ int32_t discover(char *filename) {
 
   const int32_t PEER_INFO_SIZE = 6;
   for (int32_t i = 0; i < peers_v->val.str.n; i += PEER_INFO_SIZE) {
-    print_id((unsigned char *)(peers_v->val.str.str + i));
+    print_ip((unsigned char *)(peers_v->val.str.str + i));
   }
 
   curl_easy_cleanup(handle);
@@ -663,6 +667,85 @@ int32_t discover(char *filename) {
   free(buf);
   bevalue_free(&v);
   bevalue_free(&res_v);
+  return 0;
+}
+
+int32_t handshake(char *filename, char *peer_info) {
+  char *buf = read_file(filename);
+  if (buf == NULL) {
+    fprintf(stderr, "Failed to read file\n");
+    return 1;
+  }
+
+  char *s = buf;
+  char *raw_info_v = dict_get_raw(&s, "info");
+  if (raw_info_v == NULL) {
+    fprintf(stderr, "Unable to find info key\n");
+    free(buf);
+    return 1;
+  }
+  bevalue_t v2;
+  if (next_value(&s, &v2) != 0) {
+    fprintf(stderr, "Failed to parse dict value\n");
+    free(buf);
+    return 1;
+  }
+  bevalue_free(&v2);
+  int32_t n = s - raw_info_v;
+  unsigned char hash[SHA_DIGEST_LENGTH];
+  SHA1((unsigned char *)raw_info_v, n, (unsigned char *)hash);
+
+  unsigned char id[20];
+  RAND_bytes(id, 20);
+
+  char *ip = peer_info;
+  char *port = strchr(peer_info, ':');
+  if (port == NULL) {
+    fprintf(stderr, "Invalid peer info\n");
+    free(buf);
+    return 1;
+  }
+  *port++ = '\0';
+  int32_t sockfd;
+  if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+    perror("Failed to create socket");
+    free(buf);
+    return 1;
+  }
+  struct sockaddr_in addr;
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(atoi(port));
+  addr.sin_addr.s_addr = inet_addr(ip);
+  if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    perror("Failed to connect with peer\n");
+    free(buf);
+    return 1;
+  }
+  unsigned char data[68];
+  data[0] = 19;
+  memcpy(data + 1, "BitTorrent protocol", 19);
+  memset(data + 20, 0, 8);
+  memcpy(data + 28, hash, 20);
+  memcpy(data + 48, id, 20);
+
+  if (send(sockfd, data, 68, 0) == -1) {
+    perror("Failed to send data to peer");
+    free(buf);
+    return 1;
+  }
+
+  int32_t len;
+  unsigned char recv_buf[100];
+  if ((len = recv(sockfd, recv_buf, 100, 0)) == -1) {
+    perror("Failed to receive data");
+    free(buf);
+    return 1;
+  }
+  n = recv_buf[0];
+  printf("Peer ID: ");
+  print_hex(id);
+
+  free(buf);
   return 0;
 }
 
@@ -686,6 +769,10 @@ int32_t main(int32_t argc, char **argv) {
     }
   } else if (strcmp(argv[1], "peers") == 0) {
     if (discover(argv[2]) != 0) {
+      return 1;
+    }
+  } else if (strcmp(argv[1], "handshake") == 0) {
+    if (handshake(argv[2], argv[3]) != 0) {
       return 1;
     }
   } else {
