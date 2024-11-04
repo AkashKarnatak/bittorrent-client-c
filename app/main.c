@@ -1,3 +1,6 @@
+#include <curl/curl.h>
+#include <curl/easy.h>
+#include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -384,6 +387,10 @@ void print_hex(unsigned char *s) {
   printf("\n");
 }
 
+void print_id(unsigned char *s) {
+  printf("%d.%d.%d.%d:%d\n", s[0], s[1], s[2], s[3], (s[4] << 8) | s[5]);
+}
+
 int32_t decode(char *s) {
   bevalue_t v;
   if (next_value(&s, &v) != 0) {
@@ -397,28 +404,63 @@ int32_t decode(char *s) {
   return 0;
 }
 
-int32_t parse(char *filename) {
+char *read_file(char *filename) {
   // open file
   FILE *f = fopen(filename, "r");
   if (f == NULL) {
     perror("Failed to open torrent file");
-    return 1;
+    return NULL;
   }
 
   // read contents
   fseek(f, 0, SEEK_END);
   int64_t fsize = ftell(f);
   fseek(f, 0, SEEK_SET);
-  char buf[fsize + 1];
+  char *buf = (char *)malloc((fsize + 1) * sizeof(char));
+  if (buf == NULL) {
+    fprintf(stderr, "Failed to allocate memory\n");
+    return NULL;
+  }
   if (fread(buf, 1, fsize, f) != fsize) {
     fprintf(stderr, "Error while reading file contents\n");
-    return 1;
+    return NULL;
   }
   buf[fsize] = '\0';
 
   // close file
   fclose(f);
+  return buf;
+}
 
+void urlencode(unsigned char *str, int32_t n, char *buf) {
+  for (int32_t i = 0; i < n; ++i) {
+    buf += sprintf(buf, "%%%02x", str[i]);
+  }
+}
+
+size_t write_data(void *buffer, size_t size, size_t nmemb, bestring_t *res) {
+  size_t realsize = size * nmemb;
+
+  char *new_str = (char *)realloc(res->str, res->n + realsize + 1);
+  if (new_str == NULL) {
+    fprintf(stderr, "Failed to reallocate memory\n");
+    return 0;
+  }
+
+  res->str = new_str;
+  memcpy(res->str + res->n, buffer, realsize);
+  res->n += realsize;
+  res->str[res->n] = '\0';
+
+  return realsize;
+}
+
+int32_t parse(char *filename) {
+  char *buf = read_file(filename);
+  if (buf == NULL) {
+    fprintf(stderr, "Failed to read file\n");
+    return 1;
+  }
   char *s = buf;
   bevalue_t v;
   if (next_value(&s, &v) != 0) {
@@ -487,11 +529,148 @@ int32_t parse(char *filename) {
     ptr += SHA_DIGEST_LENGTH;
   }
 
+  free(buf);
   bevalue_free(&v);
   return 0;
 }
 
+int32_t discover(char *filename) {
+  char *buf = read_file(filename);
+  if (buf == NULL) {
+    fprintf(stderr, "Failed to read file\n");
+    return 1;
+  }
+
+  char *s = buf;
+  bevalue_t v;
+  if (next_value(&s, &v) != 0) {
+    fprintf(stderr, "Failed to parse value\n");
+    free(buf);
+    return 1;
+  }
+
+  bevalue_t *announce_v = bevec_dict_get(&v.val.vec, "announce");
+  if (announce_v == NULL || announce_v->type != BE_STR) {
+    fprintf(stderr, "Invalid announce key\n");
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+  bevalue_t *info_v = bevec_dict_get(&v.val.vec, "info");
+  if (info_v == NULL || info_v->type != BE_VEC || !info_v->val.vec.is_dict) {
+    fprintf(stderr, "Invalid info key\n");
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+  bevalue_t *length_v = bevec_dict_get(&info_v->val.vec, "length");
+  if (length_v == NULL || length_v->type != BE_INT) {
+    fprintf(stderr, "Invalid length key\n");
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+
+  s = buf;
+  char *raw_info_v = dict_get_raw(&s, "info");
+  if (raw_info_v == NULL) {
+    fprintf(stderr, "Unable to find info key\n");
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+  bevalue_t v2;
+  if (next_value(&s, &v2) != 0) {
+    fprintf(stderr, "Failed to parse dict value\n");
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+  bevalue_free(&v2);
+  int32_t n = s - raw_info_v;
+  unsigned char hash[SHA_DIGEST_LENGTH];
+  SHA1((unsigned char *)raw_info_v, n, (unsigned char *)hash);
+
+  CURL *handle = curl_easy_init();
+  if (handle == NULL) {
+    fprintf(stderr, "Failed to initialize curl easy handle\n");
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+
+  char url[1024];
+  unsigned char id[20];
+  if (RAND_bytes(id, 20) != 1) {
+    fprintf(stderr, "Failed to generate unique random id\n");
+    curl_easy_cleanup(handle);
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+  char enc_id[100];
+  char enc_hash[100];
+  urlencode(hash, SHA_DIGEST_LENGTH, enc_hash);
+  urlencode(id, 20, enc_id);
+  sprintf(url,
+          "%.*s?info_hash=%s&peer_id=%s&port=6881&uploaded=0&downloaded=0&"
+          "left=%ld&compact=1",
+          announce_v->val.str.n, announce_v->val.str.str, enc_hash, enc_id,
+          length_v->val.i);
+  bestring_t res = {.str = (char *)malloc(0), .n = 0};
+  curl_easy_setopt(handle, CURLOPT_URL, url);
+  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_data);
+  curl_easy_setopt(handle, CURLOPT_WRITEDATA, &res);
+
+  if (curl_easy_perform(handle) != CURLE_OK) {
+    fprintf(stderr, "GET request failed\n");
+    curl_easy_cleanup(handle);
+    free(res.str);
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+
+  bevalue_t res_v;
+  s = res.str;
+  if (next_value(&s, &res_v) != 0) {
+    fprintf(stderr, "Failed to parse respose value\n");
+    curl_easy_cleanup(handle);
+    free(res.str);
+    free(buf);
+    bevalue_free(&v);
+    return 1;
+  }
+
+  bevalue_t *peers_v = bevec_dict_get(&res_v.val.vec, "peers");
+  if (peers_v == NULL || peers_v->type != BE_STR) {
+    fprintf(stderr, "Invalid peers key\n");
+    curl_easy_cleanup(handle);
+    free(res.str);
+    free(buf);
+    bevalue_free(&v);
+    bevalue_free(&res_v);
+    return 1;
+  }
+
+  const int32_t PEER_INFO_SIZE = 6;
+  for (int32_t i = 0; i < peers_v->val.str.n; i += PEER_INFO_SIZE) {
+    print_id((unsigned char *)(peers_v->val.str.str + i));
+  }
+
+  curl_easy_cleanup(handle);
+  free(res.str);
+  free(buf);
+  bevalue_free(&v);
+  bevalue_free(&res_v);
+  return 0;
+}
+
 int32_t main(int32_t argc, char **argv) {
+  if (curl_global_init(CURL_GLOBAL_ALL) != 0) {
+    fprintf(stderr, "Failed to initalize curl\n");
+    return 1;
+  }
   if (argc < 3) {
     fprintf(stderr, "Usage: your_bittorrent.sh <command> <args>\n");
     return 1;
@@ -503,6 +682,10 @@ int32_t main(int32_t argc, char **argv) {
     }
   } else if (strcmp(argv[1], "info") == 0) {
     if (parse(argv[2]) != 0) {
+      return 1;
+    }
+  } else if (strcmp(argv[1], "peers") == 0) {
+    if (discover(argv[2]) != 0) {
       return 1;
     }
   } else {
