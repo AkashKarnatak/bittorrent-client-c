@@ -768,12 +768,6 @@ int32_t download(char *outfile, char *filename, char *piece_index) {
 
   assert(perform_handshake(sockfd, buf, data_buf) == 0);
 
-  // check if bitfield is present
-  if (n == data_buf[0] + 48) {
-    printf("Peer does not have any pieces\n");
-    return 0;
-  }
-
   // receive bitfield
   memcpy(data_buf, data_buf + data_buf[0] + 49, 4);
   n = ntohl(*(uint32_t *)data_buf);
