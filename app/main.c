@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <assert.h>
 #include <curl/curl.h>
 #include <curl/easy.h>
 #include <netinet/in.h>
@@ -11,7 +12,10 @@
 #include <string.h>
 #include <sys/socket.h>
 
+const int32_t PEER_INFO_SIZE = 6;
+
 bool is_digit(char c) { return c >= '0' && c <= '9'; }
+uint32_t min(uint32_t x, uint32_t y) { return x < y ? x : y; }
 
 typedef struct bevalue_t bevalue_t;
 typedef struct bedictitem_t bedictitem_t;
@@ -383,14 +387,14 @@ void be_print(bevalue_t *v, char **str) {
   **str = '\0';
 }
 
-void print_hex(unsigned char *s) {
+void print_hex(uint8_t *s) {
   for (int32_t i = 0; i < SHA_DIGEST_LENGTH; ++i) {
     printf("%02x", s[i]);
   }
   printf("\n");
 }
 
-void print_ip(unsigned char *s) {
+void print_ip(uint8_t *s) {
   printf("%d.%d.%d.%d:%d\n", s[0], s[1], s[2], s[3], (s[4] << 8) | s[5]);
 }
 
@@ -435,7 +439,7 @@ char *read_file(char *filename) {
   return buf;
 }
 
-void urlencode(unsigned char *str, int32_t n, char *buf) {
+void urlencode(uint8_t *str, int32_t n, char *buf) {
   for (int32_t i = 0; i < n; ++i) {
     buf += sprintf(buf, "%%%02x", str[i]);
   }
@@ -517,8 +521,8 @@ int32_t parse(char *filename) {
   }
   bevalue_free(&v2);
   int32_t n = s - raw_info_v;
-  unsigned char sha[SHA_DIGEST_LENGTH];
-  SHA1((unsigned char *)raw_info_v, n, (unsigned char *)sha);
+  uint8_t sha[SHA_DIGEST_LENGTH];
+  SHA1((uint8_t *)raw_info_v, n, (uint8_t *)sha);
 
   printf("Tracker URL: %.*s\n", announce_v->val.str.n, announce_v->val.str.str);
   printf("Length: %ld\n", length_v->val.i);
@@ -526,7 +530,7 @@ int32_t parse(char *filename) {
   print_hex(sha);
   printf("Piece Length: %ld\n", piece_length_v->val.i);
   printf("Piece Hashes:\n");
-  unsigned char *ptr = (unsigned char *)pieces_v->val.str.str;
+  uint8_t *ptr = (uint8_t *)pieces_v->val.str.str;
   for (int32_t i = 0; i < pieces_v->val.str.n; i += SHA_DIGEST_LENGTH) {
     print_hex(ptr);
     ptr += SHA_DIGEST_LENGTH;
@@ -537,6 +541,88 @@ int32_t parse(char *filename) {
   return 0;
 }
 
+int32_t perform_get_request(char *bencode_buf, bestring_t *res) {
+  char *s = bencode_buf;
+  bevalue_t v;
+  assert(next_value(&s, &v) == 0);
+
+  bevalue_t *announce_v = bevec_dict_get(&v.val.vec, "announce");
+  assert(announce_v != NULL && announce_v->type == BE_STR);
+  bevalue_t *info_v = bevec_dict_get(&v.val.vec, "info");
+  assert(info_v != NULL && info_v->type == BE_VEC && info_v->val.vec.is_dict);
+  bevalue_t *length_v = bevec_dict_get(&info_v->val.vec, "length");
+  assert(length_v != NULL || length_v->type == BE_INT);
+
+  s = bencode_buf;
+  char *raw_info_v = dict_get_raw(&s, "info");
+  assert(raw_info_v != NULL);
+  bevalue_t v2;
+  assert(next_value(&s, &v2) == 0);
+  bevalue_free(&v2);
+
+  int32_t n = s - raw_info_v;
+  uint8_t hash[SHA_DIGEST_LENGTH];
+  SHA1((uint8_t *)raw_info_v, n, (uint8_t *)hash);
+
+  CURL *handle = curl_easy_init();
+  assert(handle != NULL);
+
+  uint8_t id[20];
+  char url_buf[1024], enc_id[100], enc_hash[100];
+  assert(RAND_bytes(id, 20) == 1);
+  urlencode(hash, SHA_DIGEST_LENGTH, enc_hash);
+  urlencode(id, 20, enc_id);
+  uint32_t url_size = announce_v->val.str.n;
+  char *url = announce_v->val.str.str;
+  int64_t length = length_v->val.i;
+  sprintf(url_buf,
+          "%.*s?info_hash=%s&peer_id=%s&port=6881&uploaded=0&downloaded=0&"
+          "left=%ld&compact=1",
+          url_size, url, enc_hash, enc_id, length);
+  curl_easy_setopt(handle, CURLOPT_URL, url_buf);
+  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_data);
+  curl_easy_setopt(handle, CURLOPT_WRITEDATA, res);
+
+  assert(curl_easy_perform(handle) == CURLE_OK);
+  curl_easy_cleanup(handle);
+  bevalue_free(&v);
+  return 0;
+}
+
+int32_t perform_handshake(int32_t sockfd, char *bencode_buf,
+                          uint8_t *data_buf) {
+  char *s = bencode_buf;
+
+  char *raw_info_v = dict_get_raw(&s, "info");
+  assert(raw_info_v != NULL);
+  bevalue_t v2;
+  assert(next_value(&s, &v2) == 0);
+  bevalue_free(&v2);
+  int32_t len = s - raw_info_v;
+  uint8_t hash[SHA_DIGEST_LENGTH];
+  SHA1((uint8_t *)raw_info_v, len, (uint8_t *)hash);
+
+  uint8_t id[20];
+  RAND_bytes(id, 20);
+
+  uint32_t n = 0;
+
+  // perform handshake
+  data_buf[0] = 19;
+  memcpy(data_buf + 1, "BitTorrent protocol", 19);
+  memset(data_buf + 20, 0, 8);
+  memcpy(data_buf + 28, hash, 20);
+  memcpy(data_buf + 48, id, 20);
+  assert(send(sockfd, data_buf, 68, 0) == 68);
+
+  // receive handshake
+  assert(recv(sockfd, data_buf, 1, 0) == 1);
+  assert((n = recv(sockfd, data_buf + 1, data_buf[0] + 48 + 4, 0)) >
+         0); // remaining 48 and additional 4 if bitfield is sent
+
+  return 0;
+}
+
 int32_t discover(char *filename) {
   char *buf = read_file(filename);
   if (buf == NULL) {
@@ -544,127 +630,21 @@ int32_t discover(char *filename) {
     return 1;
   }
 
-  char *s = buf;
-  bevalue_t v;
-  if (next_value(&s, &v) != 0) {
-    fprintf(stderr, "Failed to parse value\n");
-    free(buf);
-    return 1;
-  }
-
-  bevalue_t *announce_v = bevec_dict_get(&v.val.vec, "announce");
-  if (announce_v == NULL || announce_v->type != BE_STR) {
-    fprintf(stderr, "Invalid announce key\n");
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
-  bevalue_t *info_v = bevec_dict_get(&v.val.vec, "info");
-  if (info_v == NULL || info_v->type != BE_VEC || !info_v->val.vec.is_dict) {
-    fprintf(stderr, "Invalid info key\n");
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
-  bevalue_t *length_v = bevec_dict_get(&info_v->val.vec, "length");
-  if (length_v == NULL || length_v->type != BE_INT) {
-    fprintf(stderr, "Invalid length key\n");
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
-
-  s = buf;
-  char *raw_info_v = dict_get_raw(&s, "info");
-  if (raw_info_v == NULL) {
-    fprintf(stderr, "Unable to find info key\n");
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
-  bevalue_t v2;
-  if (next_value(&s, &v2) != 0) {
-    fprintf(stderr, "Failed to parse dict value\n");
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
-  bevalue_free(&v2);
-  int32_t n = s - raw_info_v;
-  unsigned char hash[SHA_DIGEST_LENGTH];
-  SHA1((unsigned char *)raw_info_v, n, (unsigned char *)hash);
-
-  CURL *handle = curl_easy_init();
-  if (handle == NULL) {
-    fprintf(stderr, "Failed to initialize curl easy handle\n");
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
-
-  char url[1024];
-  unsigned char id[20];
-  if (RAND_bytes(id, 20) != 1) {
-    fprintf(stderr, "Failed to generate unique random id\n");
-    curl_easy_cleanup(handle);
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
-  char enc_id[100];
-  char enc_hash[100];
-  urlencode(hash, SHA_DIGEST_LENGTH, enc_hash);
-  urlencode(id, 20, enc_id);
-  sprintf(url,
-          "%.*s?info_hash=%s&peer_id=%s&port=6881&uploaded=0&downloaded=0&"
-          "left=%ld&compact=1",
-          announce_v->val.str.n, announce_v->val.str.str, enc_hash, enc_id,
-          length_v->val.i);
   bestring_t res = {.str = (char *)malloc(0), .n = 0};
-  curl_easy_setopt(handle, CURLOPT_URL, url);
-  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_data);
-  curl_easy_setopt(handle, CURLOPT_WRITEDATA, &res);
-
-  if (curl_easy_perform(handle) != CURLE_OK) {
-    fprintf(stderr, "GET request failed\n");
-    curl_easy_cleanup(handle);
-    free(res.str);
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
-
+  assert(perform_get_request(buf, &res) == 0);
   bevalue_t res_v;
-  s = res.str;
-  if (next_value(&s, &res_v) != 0) {
-    fprintf(stderr, "Failed to parse respose value\n");
-    curl_easy_cleanup(handle);
-    free(res.str);
-    free(buf);
-    bevalue_free(&v);
-    return 1;
-  }
+  char *s = res.str;
+  assert(next_value(&s, &res_v) == 0);
 
   bevalue_t *peers_v = bevec_dict_get(&res_v.val.vec, "peers");
-  if (peers_v == NULL || peers_v->type != BE_STR) {
-    fprintf(stderr, "Invalid peers key\n");
-    curl_easy_cleanup(handle);
-    free(res.str);
-    free(buf);
-    bevalue_free(&v);
-    bevalue_free(&res_v);
-    return 1;
-  }
+  assert(peers_v != NULL && peers_v->type != BE_STR);
 
-  const int32_t PEER_INFO_SIZE = 6;
   for (int32_t i = 0; i < peers_v->val.str.n; i += PEER_INFO_SIZE) {
-    print_ip((unsigned char *)(peers_v->val.str.str + i));
+    print_ip((uint8_t *)(peers_v->val.str.str + i));
   }
 
-  curl_easy_cleanup(handle);
   free(res.str);
   free(buf);
-  bevalue_free(&v);
   bevalue_free(&res_v);
   return 0;
 }
@@ -676,76 +656,177 @@ int32_t handshake(char *filename, char *peer_info) {
     return 1;
   }
 
-  char *s = buf;
-  char *raw_info_v = dict_get_raw(&s, "info");
-  if (raw_info_v == NULL) {
-    fprintf(stderr, "Unable to find info key\n");
-    free(buf);
-    return 1;
-  }
-  bevalue_t v2;
-  if (next_value(&s, &v2) != 0) {
-    fprintf(stderr, "Failed to parse dict value\n");
-    free(buf);
-    return 1;
-  }
-  bevalue_free(&v2);
-  int32_t n = s - raw_info_v;
-  unsigned char hash[SHA_DIGEST_LENGTH];
-  SHA1((unsigned char *)raw_info_v, n, (unsigned char *)hash);
-
-  unsigned char id[20];
-  RAND_bytes(id, 20);
-
   char *ip = peer_info;
   char *port = strchr(peer_info, ':');
-  if (port == NULL) {
-    fprintf(stderr, "Invalid peer info\n");
-    free(buf);
-    return 1;
-  }
+  assert(port != NULL);
   *port++ = '\0';
+
   int32_t sockfd;
-  if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-    perror("Failed to create socket");
-    free(buf);
-    return 1;
-  }
   struct sockaddr_in addr;
+  assert((sockfd = socket(AF_INET, SOCK_STREAM, 0)) > 0);
   addr.sin_family = AF_INET;
   addr.sin_port = htons(atoi(port));
   addr.sin_addr.s_addr = inet_addr(ip);
-  if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
-    perror("Failed to connect with peer\n");
-    free(buf);
-    return 1;
-  }
-  unsigned char data[68];
-  data[0] = 19;
-  memcpy(data + 1, "BitTorrent protocol", 19);
-  memset(data + 20, 0, 8);
-  memcpy(data + 28, hash, 20);
-  memcpy(data + 48, id, 20);
+  assert(connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
 
-  if (send(sockfd, data, 68, 0) == -1) {
-    perror("Failed to send data to peer");
-    free(buf);
-    return 1;
-  }
-
-  int32_t len;
-  unsigned char recv_buf[100];
-  if ((len = recv(sockfd, recv_buf, 100, 0)) == -1) {
-    perror("Failed to receive data");
-    free(buf);
-    return 1;
-  }
-  n = recv_buf[0];
-  memcpy(hash, recv_buf + n + 9, 20);
-  memcpy(id, recv_buf + n + 29, 20);
+  uint8_t recv_buf[100] = {0};
+  uint8_t id[20] = {0};
+  perform_handshake(sockfd, buf, recv_buf);
+  memcpy(id, recv_buf + recv_buf[0] + 29, 20);
   printf("Peer ID: ");
   print_hex(id);
 
+  free(buf);
+  return 0;
+}
+
+int32_t download_piece(int32_t sockfd, uint8_t *buf, uint32_t index,
+                       uint32_t piece_size, uint8_t **piece) {
+  uint8_t *new_piece = (uint8_t *)malloc(piece_size * sizeof(uint8_t));
+  if (new_piece == NULL) {
+    fprintf(stderr, "Failed to allocate memory\n");
+    return 1;
+  }
+  *piece = new_piece;
+  int32_t n;
+
+  for (int32_t i = 0, piece_dld = 0; piece_dld != piece_size; ++i) {
+    // request block
+    uint32_t block_size = min(piece_size - piece_dld, 1 << 14);
+    *(uint32_t *)buf = htonl(13);
+    buf[4] = 6;
+    *(uint32_t *)(buf + 5) = htonl(index);
+    *(uint32_t *)(buf + 9) = htonl(i << 14);
+    *(uint32_t *)(buf + 13) = htonl(block_size);
+    assert(send(sockfd, buf, 17, 0) == 17);
+
+    // receive block
+    assert(recv(sockfd, buf, 13, 0) == 13);
+    assert(buf[4] == 7);
+    n = ntohl(*(uint32_t *)buf) - 9;
+    for (int32_t block_dld = 0; block_dld != n;) {
+      block_dld += recv(sockfd, buf + 13 + block_dld, n - block_dld, 0);
+      assert(block_dld > 0);
+      printf("##### downloading: %d\n", block_dld);
+    }
+    memcpy(*piece + piece_dld, buf + 13, block_size);
+    piece_dld += block_size;
+
+    printf("%d\n", buf[4]);
+    uint32_t i = ntohl(*(uint32_t *)(buf + 5));
+    uint32_t b = ntohl(*(uint32_t *)(buf + 9));
+    printf("Index: %d\n", i);
+    printf("Begin: %d\n", b);
+    printf("Downloaded: %d\n", block_size);
+  }
+  return 0;
+}
+
+int32_t verify_piece(uint8_t *piece, uint32_t piece_size, uint8_t *hash) {
+  uint8_t md[20];
+  SHA1(piece, piece_size, md);
+  assert(memcmp(md, hash, 20) == 0);
+  return 0;
+}
+
+int32_t save_piece(uint8_t *piece, uint32_t piece_size, char *filename) {
+  FILE *f = fopen(filename, "a");
+  if (f == NULL) {
+    perror("Failed to open file");
+    return 1;
+  }
+  assert(fwrite(piece, sizeof(uint8_t), piece_size, f) == piece_size);
+  fclose(f);
+  return 0;
+}
+
+int32_t download(char *outfile, char *filename, char *piece_index) {
+  char *buf = read_file(filename);
+  assert(buf != NULL);
+
+  bestring_t res = {.str = malloc(0), .n = 0};
+  assert(perform_get_request(buf, &res) == 0);
+  bevalue_t res_v;
+  char *s = res.str;
+  assert(next_value(&s, &res_v) == 0);
+
+  bevalue_t *peers_v = bevec_dict_get(&res_v.val.vec, "peers");
+  assert(peers_v != NULL && peers_v->type == BE_STR);
+
+  uint8_t *ptr = (uint8_t *)peers_v->val.str.str;
+
+  int32_t sockfd;
+  struct sockaddr_in addr;
+  assert((sockfd = socket(AF_INET, SOCK_STREAM, 0)) > 0);
+  addr.sin_family = AF_INET;
+  addr.sin_port = *(uint16_t *)(ptr + 4);
+  addr.sin_addr.s_addr = *(uint32_t *)ptr;
+  assert(connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+
+  uint8_t data_buf[20000] = {0};
+  uint32_t n = 0;
+
+  assert(perform_handshake(sockfd, buf, data_buf) == 0);
+
+  // check if bitfield is present
+  if (n == data_buf[0] + 48) {
+    printf("Peer does not have any pieces\n");
+    return 0;
+  }
+
+  // receive bitfield
+  memcpy(data_buf, data_buf + data_buf[0] + 49, 4);
+  n = ntohl(*(uint32_t *)data_buf);
+  assert(n <= 20000);
+  assert(recv(sockfd, data_buf + 4, n, 0) == n);
+  assert(data_buf[4] == 5);
+  if (n == 1) {
+    printf("Peer does not have any pieces\n");
+    return 0;
+  }
+
+  uint8_t bitfield[n - 1];
+  memcpy(bitfield, data_buf + 5, n - 1);
+
+  // express interest
+  *(uint32_t *)data_buf = htonl(1);
+  data_buf[4] = 2;
+  assert(send(sockfd, data_buf, 5, 0) == 5);
+
+  // expect unchoked message
+  assert(recv(sockfd, data_buf, 4, 0) == 4);
+  n = ntohl(*(uint32_t *)data_buf);
+  assert(n <= 20000);
+  assert(recv(sockfd, data_buf + 4, n, 0) == n);
+  assert(data_buf[4] == 1);
+
+  bevalue_t v;
+  s = buf;
+  assert(next_value(&s, &v) == 0);
+  bevalue_t *info_v = bevec_dict_get(&v.val.vec, "info");
+  assert(info_v != NULL && info_v->type == BE_VEC && info_v->val.vec.is_dict);
+  bevalue_t *length_v = bevec_dict_get(&info_v->val.vec, "length");
+  assert(length_v != NULL && length_v->type == BE_INT);
+  bevalue_t *pieces_v = bevec_dict_get(&info_v->val.vec, "pieces");
+  assert(pieces_v != NULL && pieces_v->type == BE_STR);
+  bevalue_t *piece_length_v = bevec_dict_get(&info_v->val.vec, "piece length");
+  assert(piece_length_v != NULL && piece_length_v->type == BE_INT);
+
+  uint32_t total_length = length_v->val.i;
+  uint32_t piece_length = piece_length_v->val.i;
+  int32_t index = atoi(piece_index);
+  uint32_t piece_size = min(total_length - index * piece_length, piece_length);
+  uint8_t *piece = NULL;
+  assert(download_piece(sockfd, data_buf, index, piece_size, &piece) == 0);
+  assert(verify_piece(piece, piece_size,
+                      (uint8_t *)pieces_v->val.str.str +
+                          index * SHA_DIGEST_LENGTH) == 0);
+  assert(save_piece(piece, piece_size, outfile) == 0);
+
+  bevalue_free(&v);
+  bevalue_free(&res_v);
+  free(res.str);
+  free(piece);
   free(buf);
   return 0;
 }
@@ -774,6 +855,11 @@ int32_t main(int32_t argc, char **argv) {
     }
   } else if (strcmp(argv[1], "handshake") == 0) {
     if (handshake(argv[2], argv[3]) != 0) {
+      return 1;
+    }
+  } else if (strcmp(argv[1], "download_piece") == 0) {
+    assert(strcmp(argv[2], "-o") == 0);
+    if (download(argv[3], argv[4], argv[5]) != 0) {
       return 1;
     }
   } else {
