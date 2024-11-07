@@ -617,8 +617,8 @@ int32_t perform_handshake(int32_t sockfd, char *bencode_buf,
 
   // receive handshake
   assert(recv(sockfd, data_buf, 1, 0) == 1);
-  assert((n = recv(sockfd, data_buf + 1, data_buf[0] + 48 + 4, 0)) >
-         0); // remaining 48 and additional 4 if bitfield is sent
+  assert((n = recv(sockfd, data_buf + 1, data_buf[0] + 48, 0)) ==
+         data_buf[0] + 48); // remaining 48 and additional 4 if bitfield is sent
 
   return 0;
 }
@@ -637,7 +637,7 @@ int32_t discover(char *filename) {
   assert(next_value(&s, &res_v) == 0);
 
   bevalue_t *peers_v = bevec_dict_get(&res_v.val.vec, "peers");
-  assert(peers_v != NULL && peers_v->type != BE_STR);
+  assert(peers_v != NULL && peers_v->type == BE_STR);
 
   for (int32_t i = 0; i < peers_v->val.str.n; i += PEER_INFO_SIZE) {
     print_ip((uint8_t *)(peers_v->val.str.str + i));
@@ -769,15 +769,16 @@ int32_t download(char *outfile, char *filename, char *piece_index) {
   assert(perform_handshake(sockfd, buf, data_buf) == 0);
 
   // receive bitfield
-  memcpy(data_buf, data_buf + data_buf[0] + 49, 4);
+  n = recv(sockfd, data_buf, 4, 0);
+  if (n == 0) {
+    printf("Peer does not have any piece\n");
+    exit(0);
+  }
+  assert(n == 4);
   n = ntohl(*(uint32_t *)data_buf);
   assert(n <= 20000);
   assert(recv(sockfd, data_buf + 4, n, 0) == n);
   assert(data_buf[4] == 5);
-  if (n == 1) {
-    printf("Peer does not have any pieces\n");
-    return 0;
-  }
 
   uint8_t bitfield[n - 1];
   memcpy(bitfield, data_buf + 5, n - 1);
@@ -825,6 +826,102 @@ int32_t download(char *outfile, char *filename, char *piece_index) {
   return 0;
 }
 
+int32_t download_everything(char *outfile, char *filename) {
+  char *buf = read_file(filename);
+  assert(buf != NULL);
+
+  bestring_t res = {.str = malloc(0), .n = 0};
+  assert(perform_get_request(buf, &res) == 0);
+  bevalue_t res_v;
+  char *s = res.str;
+  assert(next_value(&s, &res_v) == 0);
+
+  bevalue_t *peers_v = bevec_dict_get(&res_v.val.vec, "peers");
+  assert(peers_v != NULL && peers_v->type == BE_STR);
+
+  uint8_t *ptr = (uint8_t *)peers_v->val.str.str;
+
+  int32_t sockfd;
+  struct sockaddr_in addr;
+  assert((sockfd = socket(AF_INET, SOCK_STREAM, 0)) > 0);
+  addr.sin_family = AF_INET;
+  addr.sin_port = *(uint16_t *)(ptr + 4);
+  addr.sin_addr.s_addr = *(uint32_t *)ptr;
+  assert(connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+
+  uint8_t data_buf[20000] = {0};
+  uint32_t n = 0;
+
+  assert(perform_handshake(sockfd, buf, data_buf) == 0);
+
+  // receive bitfield
+  n = recv(sockfd, data_buf, 4, 0);
+  if (n == 0) {
+    printf("Peer does not have any piece\n");
+    exit(0);
+  }
+  assert(n == 4);
+  n = ntohl(*(uint32_t *)data_buf);
+  assert(n <= 20000);
+  assert(recv(sockfd, data_buf + 4, n, 0) == n);
+  assert(data_buf[4] == 5);
+
+  uint8_t bitfield[n - 1];
+  memcpy(bitfield, data_buf + 5, n - 1);
+
+  // express interest
+  *(uint32_t *)data_buf = htonl(1);
+  data_buf[4] = 2;
+  assert(send(sockfd, data_buf, 5, 0) == 5);
+
+  // expect unchoked message
+  assert(recv(sockfd, data_buf, 4, 0) == 4);
+  n = ntohl(*(uint32_t *)data_buf);
+  assert(n <= 20000);
+  assert(recv(sockfd, data_buf + 4, n, 0) == n);
+  assert(data_buf[4] == 1);
+
+  bevalue_t v;
+  s = buf;
+  assert(next_value(&s, &v) == 0);
+  bevalue_t *info_v = bevec_dict_get(&v.val.vec, "info");
+  assert(info_v != NULL && info_v->type == BE_VEC && info_v->val.vec.is_dict);
+  bevalue_t *length_v = bevec_dict_get(&info_v->val.vec, "length");
+  assert(length_v != NULL && length_v->type == BE_INT);
+  bevalue_t *pieces_v = bevec_dict_get(&info_v->val.vec, "pieces");
+  assert(pieces_v != NULL && pieces_v->type == BE_STR);
+  bevalue_t *piece_length_v = bevec_dict_get(&info_v->val.vec, "piece length");
+  assert(piece_length_v != NULL && piece_length_v->type == BE_INT);
+
+  int32_t index = 0;
+  uint32_t total_length = length_v->val.i;
+  uint32_t piece_length = piece_length_v->val.i;
+  uint32_t remaining = total_length;
+  n = sizeof(bitfield) / sizeof(bitfield[0]);
+  for (int32_t i = 0; i < n; ++i) {
+    for (int32_t j = 7; j >= 0; --j, ++index) {
+      if (1 << j & bitfield[i]) {
+        uint8_t *piece = NULL;
+        uint32_t piece_size = min(remaining, piece_length);
+        assert(download_piece(sockfd, data_buf, index, piece_size, &piece) ==
+               0);
+        assert(verify_piece(piece, piece_size,
+                            (uint8_t *)pieces_v->val.str.str +
+                                index * SHA_DIGEST_LENGTH) == 0);
+        assert(save_piece(piece, piece_size, outfile) == 0);
+        free(piece);
+        remaining -= piece_size;
+      }
+    }
+  }
+
+  bevalue_free(&v);
+  bevalue_free(&res_v);
+  free(res.str);
+  free(buf);
+  return 0;
+}
+
 int32_t main(int32_t argc, char **argv) {
   if (curl_global_init(CURL_GLOBAL_ALL) != 0) {
     fprintf(stderr, "Failed to initalize curl\n");
@@ -854,6 +951,11 @@ int32_t main(int32_t argc, char **argv) {
   } else if (strcmp(argv[1], "download_piece") == 0) {
     assert(strcmp(argv[2], "-o") == 0);
     if (download(argv[3], argv[4], argv[5]) != 0) {
+      return 1;
+    }
+  } else if (strcmp(argv[1], "download") == 0) {
+    assert(strcmp(argv[2], "-o") == 0);
+    if (download_everything(argv[3], argv[4]) != 0) {
       return 1;
     }
   } else {
